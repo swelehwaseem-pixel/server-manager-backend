@@ -1,0 +1,49 @@
+# --- STAGE 1: Builder ---
+FROM registry.access.redhat.com/ubi9/python-311 AS builder
+USER root
+WORKDIR /build
+COPY requirements.txt .
+RUN pip install --no-cache-dir --user -r requirements.txt
+
+# --- STAGE 2: Runner ---
+FROM registry.access.redhat.com/ubi9/ubi-minimal:latest AS runner
+
+# Install system dependencies
+RUN microdnf install -y \
+    python3.11 \
+    systemd \
+    curl \
+    gnupg2 \
+    unixODBC \
+    && microdnf clean all
+
+# 🔥 Install Microsoft ODBC Driver 18 for SQL Server (RHEL 9/UBI 9)
+RUN curl -sSL https://packages.microsoft.com/config/rhel/9/prod.repo > /etc/yum.repos.d/mssql-release.repo \
+    && microdnf install -y msodbcsql18 mssql-tools18 \
+    && microdnf clean all
+
+# Create non-root user
+RUN adduser --uid 1000 --system --no-create-home appuser && \
+    usermod -aG systemd-journal appuser
+
+WORKDIR /app
+COPY --from=builder /home/--build-user/.local /home/appuser/.local
+COPY ./app ./app
+
+ENV PATH=/home/appuser/.local/bin:/opt/mssql-tools18/bin:$PATH
+ENV PYTHONUNBUFFERED=1
+ENV TZ=UTC
+
+RUN chown -R appuser:appuser /app
+USER appuser
+
+HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
+  CMD python3 -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')" || exit 1
+
+EXPOSE 8000
+CMD ["sh", "-c", "gunicorn app.main:app \
+    -w ${WEB_CONCURRENCY:-2} \
+    -k uvicorn.workers.UvicornWorker \
+    --bind 0.0.0.0:8000 \
+    --timeout 120 \
+    --graceful-timeout 30"]
