@@ -1,4 +1,5 @@
 import asyncio
+import os
 from fastapi import APIRouter, Depends, HTTPException, status
 from app.auth import get_current_user
 from app.database import User
@@ -6,8 +7,27 @@ from app.schemas.db_admin import DBInstanceControlInput, SilentDBCARequestInput
 
 router = APIRouter(prefix="/api/v1/oracle", tags=["Oracle Engine"])
 
+# 🔐 NEW: Strict path validation to prevent sudo injection
+def validate_oracle_home(path: str):
+    # Restrict to typical Oracle installation paths on Linux
+    if not (path.startswith("/u01/app/oracle/product/") or 
+            path.startswith("/u02/app/oracle/product/") or
+            path.startswith("/opt/oracle/product/")):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, 
+            detail="Oracle home path is restricted to standard installation directories."
+        )
+    if not os.path.isdir(path):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, 
+            detail="Oracle home directory does not exist on the host system."
+        )
+
 @router.post("/instance-control")
 async def control_oracle_instance(payload: DBInstanceControlInput, current_user: User = Depends(get_current_user)):
+    # 🔐 Validate the path before using it in subprocess
+    validate_oracle_home(payload.oracle_home)
+    
     binary_target = "dbstart" if payload.action == "start" else "dbshut"
     binary_path = f"{payload.oracle_home}/bin/{binary_target}"
     
@@ -30,6 +50,9 @@ async def control_oracle_instance(payload: DBInstanceControlInput, current_user:
 
 @router.post("/create-database")
 async def create_database_silent(payload: SilentDBCARequestInput, current_user: User = Depends(get_current_user)):
+    # 🔐 Validate the path before using it in subprocess
+    validate_oracle_home(payload.oracle_home)
+    
     dbca_binary = f"{payload.oracle_home}/bin/dbca"
     cmd = [
         "sudo", "-u", "oracle", dbca_binary, "-silent", "-createDatabase",
