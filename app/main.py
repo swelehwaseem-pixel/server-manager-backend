@@ -43,6 +43,10 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Enterprise Linux Core Engine", version="1.0.0", lifespan=lifespan)
 
+@app.get("/health", tags=["System"])
+async def health_check():
+    return {"status": "healthy", "service": "server-manager-backend"}
+    
 # 🔐 FIX: Strict CORS - reads from .env, no wildcard with credentials
 app.add_middleware(
     CORSMiddleware,
