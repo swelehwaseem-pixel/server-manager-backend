@@ -9,7 +9,7 @@ from prometheus_client import generate_latest, Gauge, REGISTRY
 import psutil
 
 from app.config import settings
-from app.database import engine, Base, get_async_db, User
+from app.database import engine, Base, get_async_db, User, AsyncSessionLocal
 from app.auth import SecurityUtils
 from app.schemas.auth import TokenResponse
 from app.routers import metrics, services, oracle_admin
@@ -20,23 +20,33 @@ DISK_USAGE = Gauge('server_disk_usage_percent', 'Current Disk usage in percent',
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Create tables
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
         
+    # 🔐 FIX: Create admin ONLY if environment variables are explicitly set
     async with AsyncSessionLocal() as session:
         async with session.begin():
-            result = await session.execute(select(User).filter(User.username == "admin"))
-            if not result.scalars().first():
-                admin_user = User(username="admin", hashed_password=SecurityUtils.hash_password("changeme123"))
-                session.add(admin_user)
+            if settings.first_superuser and settings.first_superuser_password:
+                result = await session.execute(select(User).filter(User.username == settings.first_superuser))
+                if not result.scalars().first():
+                    admin_user = User(
+                        username=settings.first_superuser, 
+                        hashed_password=SecurityUtils.hash_password(settings.first_superuser_password)
+                    )
+                    session.add(admin_user)
+                    print(f"✅ Superuser '{settings.first_superuser}' created successfully.")
+            else:
+                print("⚠️  No FIRST_SUPERUSER env vars set. Skipping admin creation.")
     yield
     await engine.dispose()
 
 app = FastAPI(title="Enterprise Linux Core Engine", version="1.0.0", lifespan=lifespan)
 
+# 🔐 FIX: Strict CORS - reads from .env, no wildcard with credentials
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"], # Tighten this string pattern to an explicit secure frontend URL domain in production
+    allow_origins=[origin.strip() for origin in settings.cors_origins.split(",")],
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE"],
     allow_headers=["Authorization", "Content-Type"],
