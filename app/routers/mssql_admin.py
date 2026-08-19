@@ -1,21 +1,144 @@
-# Example: Execute T-SQL against MSSQL
-@router.post("/mssql/query")
-async def execute_sql(payload: SQLQueryInput, current_user = Depends(get_current_user)):
-    # Use asyncio.to_thread to run pyodbc (which is sync)
+import asyncio
+from fastapi import APIRouter, Depends, HTTPException, status
+from pydantic import BaseModel, Field, SecretStr
+from typing import Optional, List, Any
+import pyodbc
+from app.auth import get_current_user
+from app.database import User
+
+router = APIRouter(prefix="/api/v1/mssql", tags=["MSSQL Engine"])
+
+class MSSQLConnectionConfig(BaseModel):
+    server: str = Field(..., description="Hostname or IP, e.g., 'mssql-server'")
+    database: str = Field(..., description="Database name")
+    username: str = Field(..., description="SQL Server login user")
+    password: SecretStr = Field(..., description="SQL Server login password")
+    driver: str = Field("ODBC Driver 18 for SQL Server", description="ODBC Driver name")
+    encrypt: bool = Field(True, description="Use SSL encryption")
+    trust_cert: bool = Field(False, description="Trust server certificate (set True for self-signed)")
+
+class SQLQueryInput(MSSQLConnectionConfig):
+    sql_query: str = Field(..., description="T-SQL query to execute (SELECT, INSERT, UPDATE, etc.)")
+    fetch_limit: int = Field(100, ge=1, le=10000, description="Max rows to return for SELECT")
+
+class BackupInput(BaseModel):
+    server: str
+    username: str
+    password: SecretStr
+    database: str
+    backup_path: str = Field(..., description="Full path on host, e.g., '/backups/my_db.bak'")
+
+class CreateDatabaseInput(MSSQLConnectionConfig):
+    new_database_name: str = Field(..., min_length=3, max_length=128, pattern="^[a-zA-Z0-9_]+$")
+
+def _get_connection_string(config: MSSQLConnectionConfig) -> str:
+    return (
+        f"DRIVER={{{config.driver}}};"
+        f"SERVER={config.server};"
+        f"DATABASE={config.database};"
+        f"UID={config.username};"
+        f"PWD={config.password.get_secret_value()};"
+        f"Encrypt={'yes' if config.encrypt else 'no'};"
+        f"TrustServerCertificate={'yes' if config.trust_cert else 'no'};"
+    )
+
+@router.post("/query")
+async def execute_sql_query(
+    payload: SQLQueryInput,
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Execute a T-SQL query against a MSSQL database.
+    Returns rows as JSON.
+    """
     def sync_query():
-        conn = pyodbc.connect(f"DSN={payload.dsn};UID={payload.user};PWD={payload.password}")
+        conn = pyodbc.connect(_get_connection_string(payload))
         cursor = conn.cursor()
         cursor.execute(payload.sql_query)
-        return cursor.fetchall()
+        
+        if payload.sql_query.strip().upper().startswith(("SELECT", "WITH", "SHOW")):
+            rows = cursor.fetchmany(payload.fetch_limit)
+            columns = [column[0] for column in cursor.description] if cursor.description else []
+            result = [dict(zip(columns, row)) for row in rows]
+            return {"type": "read", "rows": result, "count": len(result)}
+        else:
+            conn.commit()
+            return {"type": "write", "rows_affected": cursor.rowcount}
     
-    result = await asyncio.to_thread(sync_query)
-    return {"data": result}
+    try:
+        result = await asyncio.to_thread(sync_query)
+        return {"success": True, "data": result}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"MSSQL Error: {str(e)}")
 
-@router.post("/mssql/backup")
-async def backup_database(payload: BackupInput, current_user = Depends(get_current_user)):
-    # Runs: sqlcmd -Q "BACKUP DATABASE [db] TO DISK = '/backups/db.bak'"
+@router.post("/database")
+async def create_mssql_database(
+    payload: CreateDatabaseInput,
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Create a new database on the MSSQL server.
+    """
+    def sync_create_db():
+        # Connect to the 'master' database to create new DB
+        master_config = payload.model_copy()
+        master_config.database = "master"
+        conn = pyodbc.connect(_get_connection_string(master_config))
+        conn.autocommit = True
+        cursor = conn.cursor()
+        cursor.execute(f"CREATE DATABASE [{payload.new_database_name}]")
+        return {"database": payload.new_database_name, "status": "created"}
+    
+    result = await asyncio.to_thread(sync_create_db)
+    return {"success": True, "data": result}
+
+@router.post("/backup")
+async def backup_mssql_database(
+    payload: BackupInput,
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Trigger a full database backup using sqlcmd (subprocess).
+    """
+    cmd = [
+        "sqlcmd",
+        "-S", payload.server,
+        "-U", payload.username,
+        "-P", payload.password.get_secret_value(),
+        "-Q", f"BACKUP DATABASE [{payload.database}] TO DISK = '{payload.backup_path}' WITH FORMAT, MEDIANAME = 'DBSet'"
+    ]
+    
     process = await asyncio.create_subprocess_exec(
-        "sqlcmd", "-S", payload.server, "-U", payload.user, "-P", payload.password,
-        "-Q", f"BACKUP DATABASE [{payload.database}] TO DISK = '{payload.backup_path}'"
+        *cmd,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE
     )
-    ...
+    stdout, stderr = await process.communicate()
+    
+    if process.returncode != 0:
+        raise HTTPException(
+            status_code=500,
+            detail=f"SQLCMD Error: {stderr.decode().strip() or stdout.decode().strip()}"
+        )
+    return {"success": True, "message": f"Backup of '{payload.database}' completed to {payload.backup_path}"}
+
+@router.delete("/database")
+async def drop_mssql_database(
+    payload: MSSQLConnectionConfig,
+    target_database: str,
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Drop a database. USE WITH EXTREME CAUTION.
+    """
+    def sync_drop_db():
+        master_config = payload.model_copy()
+        master_config.database = "master"
+        conn = pyodbc.connect(_get_connection_string(master_config))
+        conn.autocommit = True
+        cursor = conn.cursor()
+        cursor.execute(f"DROP DATABASE [{target_database}]")
+        return {"database": target_database, "status": "dropped"}
+    
+    result = await asyncio.to_thread(sync_drop_db)
+    return {"success": True, "data": result}
