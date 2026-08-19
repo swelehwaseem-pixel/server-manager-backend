@@ -9,3 +9,6 @@ psutil>=5.9.0
 prometheus-client>=0.20.0
 pydantic-settings>=2.2.1
 oracledb>=2.0.0
+# NEW DEPENDENCIES
+pyodbc>=5.1.0           # For MSSQL management
+httpx>=0.27.0           # For async Loki queries
