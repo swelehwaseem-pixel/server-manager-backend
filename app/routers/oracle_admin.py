@@ -14,9 +14,16 @@ router = APIRouter(prefix="/api/v1/oracle", tags=["Oracle Engine"])
 # Security Validation
 # ------------------------------------------------------------------
 def validate_oracle_home(path: str):
-    if not (path.startswith("/u01/app/oracle/product/") or
-            path.startswith("/u02/app/oracle/product/") or
-            path.startswith("/opt/oracle/product/")):
+    """
+    Restrict Oracle home paths to prevent sudo injection attacks.
+    Only allows standard Oracle installation directories.
+    """
+    allowed_prefixes = [
+        "/u01/app/oracle/product/",
+        "/u02/app/oracle/product/",
+        "/opt/oracle/product/"
+    ]
+    if not any(path.startswith(prefix) for prefix in allowed_prefixes):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Oracle home path is restricted to standard installation directories."
@@ -36,6 +43,9 @@ async def control_oracle_instance(
     payload: DBInstanceControlInput,
     current_user: User = Depends(get_current_user)
 ):
+    """
+    Start or Stop an Oracle database instance using dbstart/dbshut.
+    """
     validate_oracle_home(payload.oracle_home)
 
     binary_target = "dbstart" if payload.action == "start" else "dbshut"
@@ -49,27 +59,32 @@ async def control_oracle_instance(
 
     process = await asyncio.create_subprocess_exec(
         "sudo", "-u", "oracle", binary_path, payload.oracle_home,
-        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, env=custom_env
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        env=custom_env
     )
     stdout, stderr = await process.communicate()
 
     if process.returncode != 0:
-        raise HTTPException(status_code=500, detail=f"Oracle Exec Error: {stderr.decode().strip()}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Oracle Exec Error: {stderr.decode().strip()}"
+        )
 
     return {"status": "Success", "stdout": stdout.decode().strip()}
 
 
 # ------------------------------------------------------------------
-# 2. 🔥 NEW: Execute SQL Query
+# 2. Execute SQL Query (🔥 Thin Mode - NO Oracle Instant Client!)
 # ------------------------------------------------------------------
 class OracleSQLQueryInput(BaseModel):
     host: str = Field(..., description="Database host, e.g., 'localhost' or 'oracle-db'")
     port: int = Field(1521, description="Listener port")
-    service_name: str = Field(..., description="Oracle service name or SID")
+    service_name: str = Field(..., description="Oracle service name (CDB or PDB service)")
     username: str = Field(..., description="Database user")
     password: SecretStr = Field(..., description="Database password")
-    sql_query: str = Field(..., description="SQL query to execute")
-    fetch_limit: int = Field(100, ge=1, le=10000)
+    sql_query: str = Field(..., description="SQL query to execute (SELECT, INSERT, UPDATE, DDL)")
+    fetch_limit: int = Field(100, ge=1, le=10000, description="Max rows to return for SELECT queries")
 
 
 @router.post("/query")
@@ -78,9 +93,17 @@ async def execute_oracle_query(
     current_user: User = Depends(get_current_user)
 ):
     """
-    Execute a SQL query against an Oracle database using oracledb (async).
+    Execute a SQL query against an Oracle database (CDB or PDB).
+    
+    🔥 Uses `oracledb` in THIN MODE (pure Python).
+    ✅ NO Oracle Instant Client libraries required on the host or container.
+    ✅ Works with any Oracle version 11g+ (including 19c, 21c, 23ai).
     """
     async def async_query():
+        # 🔥 EXPLICITLY SET TO THIN MODE
+        # This guarantees zero dependency on Oracle Instant Client (.so files)
+        oracledb.defaults.driver = "thin"
+
         dsn = f"{payload.host}:{payload.port}/{payload.service_name}"
         pool = await oracledb.create_pool(
             user=payload.username,
@@ -92,6 +115,8 @@ async def execute_oracle_query(
         async with pool.acquire() as conn:
             async with conn.cursor() as cursor:
                 await cursor.execute(payload.sql_query)
+
+                # Check if it's a SELECT query
                 if payload.sql_query.strip().upper().startswith(("SELECT", "WITH")):
                     rows = await cursor.fetchmany(payload.fetch_limit)
                     columns = [col[0] for col in cursor.description] if cursor.description else []
@@ -104,8 +129,17 @@ async def execute_oracle_query(
     try:
         result = await async_query()
         return {"success": True, "data": result}
+    except oracledb.DatabaseError as e:
+        error_obj, = e.args
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Oracle Database Error: {error_obj.message}"
+        )
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Oracle Query Error: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Oracle Query Error: {str(e)}"
+        )
 
 
 # ------------------------------------------------------------------
@@ -116,6 +150,10 @@ async def create_database_silent(
     payload: SilentDBCARequestInput,
     current_user: User = Depends(get_current_user)
 ):
+    """
+    Silently create a new Oracle database (CDB or non-CDB) using DBCA.
+    Supports multi-tenant (CDB with PDBs) or single-tenant.
+    """
     validate_oracle_home(payload.oracle_home)
 
     dbca_binary = f"{payload.oracle_home}/bin/dbca"
@@ -130,37 +168,56 @@ async def create_database_silent(
 
     if payload.create_as_cdb:
         cmd.extend([
-            "-createAsContainerDatabase", "true", "-numberOfPDBs", str(payload.number_of_pdbs),
-            "-pdbName", payload.pdb_name, "-pdbAdminPassword", payload.pdb_admin_password
+            "-createAsContainerDatabase", "true",
+            "-numberOfPDBs", str(payload.number_of_pdbs),
+            "-pdbName", payload.pdb_name,
+            "-pdbAdminPassword", payload.pdb_admin_password
         ])
     else:
         cmd.extend(["-createAsContainerDatabase", "false"])
 
-    custom_env = {"ORACLE_HOME": payload.oracle_home, "PATH": f"{payload.oracle_home}/bin:/usr/bin:/bin"}
+    custom_env = {
+        "ORACLE_HOME": payload.oracle_home,
+        "PATH": f"{payload.oracle_home}/bin:/usr/bin:/bin"
+    }
 
     try:
         process = await asyncio.create_subprocess_exec(
-            *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, env=custom_env
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            env=custom_env
         )
+        # Run monitoring in background
         asyncio.create_task(monitor_dbca_process(process, payload.sid))
-        return {"status": "Processing Spawning", "message": f"DBCA initialization tasked for SID: {payload.sid}"}
+        return {
+            "status": "Processing Spawning",
+            "message": f"DBCA initialization tasked for SID: {payload.sid}"
+        }
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Process Pipeline Failed: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Process Pipeline Failed: {str(e)}"
+        )
 
 
 async def monitor_dbca_process(process, sid: str):
+    """Background task to log DBCA completion."""
     stdout, stderr = await process.communicate()
     print(f"[DBCA Finished] SID: {sid} Code: {process.returncode}")
 
 
 # ------------------------------------------------------------------
-# 4. RMAN Backup
+# 4. RMAN Backup (Full / Incremental)
 # ------------------------------------------------------------------
 class RMANBackupInput(BaseModel):
     oracle_home: str = Field(..., max_length=255)
     oracle_sid: str = Field(..., max_length=50, pattern="^[a-zA-Z0-9_]+$")
     backup_type: str = Field("full", pattern="^(full|incremental)$")
-    backup_destination: str = Field("/backup/oracle", description="Directory on host for backup files")
+    backup_destination: str = Field(
+        "/backup/oracle",
+        description="Directory on host for backup files"
+    )
 
 
 @router.post("/rman-backup")
@@ -168,17 +225,25 @@ async def rman_backup(
     payload: RMANBackupInput,
     current_user: User = Depends(get_current_user)
 ):
+    """
+    Trigger an Oracle RMAN database backup.
+    - `full`: Complete database + archivelog backup.
+    - `incremental`: Level 1 incremental backup.
+    """
     validate_oracle_home(payload.oracle_home)
 
-    rman_commands = """
-    CONFIGURE CONTROLFILE AUTOBACKUP ON;
-    CONFIGURE DEVICE TYPE DISK PARALLELISM 2;
-    BACKUP AS BACKUPSET DATABASE PLUS ARCHIVELOG DELETE INPUT;
-    """ if payload.backup_type == "full" else """
-    CONFIGURE CONTROLFILE AUTOBACKUP ON;
-    CONFIGURE DEVICE TYPE DISK PARALLELISM 2;
-    BACKUP INCREMENTAL LEVEL 1 DATABASE PLUS ARCHIVELOG DELETE INPUT;
-    """
+    if payload.backup_type == "full":
+        rman_commands = """
+        CONFIGURE CONTROLFILE AUTOBACKUP ON;
+        CONFIGURE DEVICE TYPE DISK PARALLELISM 2;
+        BACKUP AS BACKUPSET DATABASE PLUS ARCHIVELOG DELETE INPUT;
+        """
+    else:  # incremental
+        rman_commands = """
+        CONFIGURE CONTROLFILE AUTOBACKUP ON;
+        CONFIGURE DEVICE TYPE DISK PARALLELISM 2;
+        BACKUP INCREMENTAL LEVEL 1 DATABASE PLUS ARCHIVELOG DELETE INPUT;
+        """
 
     cmd = [
         "sudo", "-u", "oracle",
@@ -201,19 +266,26 @@ async def rman_backup(
     stdout, stderr = await process.communicate()
 
     if process.returncode != 0:
-        raise HTTPException(status_code=500, detail=f"RMAN Error: {stderr.decode().strip()}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"RMAN Error: {stderr.decode().strip()}"
+        )
 
     return {"status": "RMAN backup initiated", "stdout": stdout.decode().strip()}
 
 
 # ------------------------------------------------------------------
-# 5. 🔥 NEW: RMAN Restore
+# 5. RMAN Restore + Recovery
 # ------------------------------------------------------------------
 class RMANRestoreInput(BaseModel):
     oracle_home: str = Field(..., max_length=255)
     oracle_sid: str = Field(..., max_length=50, pattern="^[a-zA-Z0-9_]+$")
-    restore_destination: str = Field("/backup/oracle", description="Directory containing RMAN backupsets")
+    restore_destination: str = Field(
+        "/backup/oracle",
+        description="Directory containing RMAN backupsets"
+    )
     recover_db: bool = Field(True, description="Automatically recover database after restore")
+    resetlogs: bool = Field(True, description="Use RESETLOGS when opening (required if recovery performed)")
 
 
 @router.post("/rman-restore")
@@ -223,23 +295,26 @@ async def rman_restore(
 ):
     """
     Restore and optionally recover an Oracle database from RMAN backups.
-    This runs in NOMOUNT -> MOUNT -> RESTORE -> RECOVER -> OPEN sequence.
+    Runs in sequence: STARTUP NOMOUNT → RESTORE CONTROLFILE → MOUNT → RESTORE DATABASE → RECOVER → OPEN.
     """
     validate_oracle_home(payload.oracle_home)
 
     # Build RMAN restore script
-    rman_script = f"""
+    rman_script = """
     STARTUP NOMOUNT;
-    RESTORE CONTROLFILE FROM '{payload.restore_destination}/%U';
+    RESTORE CONTROLFILE FROM AUTOBACKUP;
     ALTER DATABASE MOUNT;
     RESTORE DATABASE;
     """
+
     if payload.recover_db:
         rman_script += """
     RECOVER DATABASE;
     """
-    rman_script += """
-    ALTER DATABASE OPEN;
+
+    open_cmd = "ALTER DATABASE OPEN RESETLOGS;" if payload.resetlogs else "ALTER DATABASE OPEN;"
+    rman_script += f"""
+    {open_cmd}
     EXIT;
     """
 
@@ -249,6 +324,7 @@ async def rman_restore(
         f"export ORACLE_HOME={payload.oracle_home}; "
         f"export ORACLE_SID={payload.oracle_sid}; "
         f"export PATH=$ORACLE_HOME/bin:$PATH; "
+        f"export ORACLE_HOME={payload.oracle_home}; "
         f"rman target / <<EOF\n"
         f"{rman_script}\n"
         f"EOF"
@@ -262,7 +338,10 @@ async def rman_restore(
     stdout, stderr = await process.communicate()
 
     if process.returncode != 0:
-        raise HTTPException(status_code=500, detail=f"RMAN Restore Error: {stderr.decode().strip()}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"RMAN Restore Error: {stderr.decode().strip()}"
+        )
 
     return {"status": "RMAN restore completed", "stdout": stdout.decode().strip()}
 
@@ -285,6 +364,9 @@ async def expdp_backup(
     payload: EXPDPBackupInput,
     current_user: User = Depends(get_current_user)
 ):
+    """
+    Trigger an Oracle Data Pump Export (EXPDP) for specified schemas.
+    """
     validate_oracle_home(payload.oracle_home)
 
     cmd = [
@@ -306,7 +388,10 @@ async def expdp_backup(
     stdout, stderr = await process.communicate()
 
     if process.returncode != 0:
-        raise HTTPException(status_code=500, detail=f"EXPDP Error: {stderr.decode().strip()}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"EXPDP Error: {stderr.decode().strip()}"
+        )
 
     return {"status": "EXPDP export initiated", "stdout": stdout.decode().strip()}
 
@@ -330,6 +415,9 @@ async def impdp_restore(
     payload: IMPDPRestoreInput,
     current_user: User = Depends(get_current_user)
 ):
+    """
+    Trigger an Oracle Data Pump Import (IMPDP) to restore schemas from a dump file.
+    """
     validate_oracle_home(payload.oracle_home)
 
     cmd = [
@@ -352,6 +440,9 @@ async def impdp_restore(
     stdout, stderr = await process.communicate()
 
     if process.returncode != 0:
-        raise HTTPException(status_code=500, detail=f"IMPDP Error: {stderr.decode().strip()}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"IMPDP Error: {stderr.decode().strip()}"
+        )
 
     return {"status": "IMPDP restore initiated", "stdout": stdout.decode().strip()}
