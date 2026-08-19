@@ -112,4 +112,6 @@ volumes:
 
 networks:
   backend_network:
-    driver: bridge
+    driver: bridge 
+environment:
+    - WEB_CONCURRENCY=${WEB_CONCURRENCY:-2}
