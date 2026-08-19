@@ -1,13 +1,18 @@
-# Databases & State
+# Databases & State (SQLite)
 *.db
 *.sqlite3
 server_manager.db
 
-# Environments & App Tokens
+# Environments & App Tokens (CRITICAL - keeps SECRET_KEY safe)
 .env
 .venv
 env/
 venv/
+
+# Docker Volumes (Local state directories)
+prometheus-data/
+grafana-storage/
+*.log
 
 # Compilation Artifacts & Caches
 __pycache__/
