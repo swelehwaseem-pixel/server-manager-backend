@@ -12,7 +12,16 @@ from app.config import settings
 from app.database import engine, Base, get_async_db, User, AsyncSessionLocal
 from app.auth import SecurityUtils
 from app.schemas.auth import TokenResponse
-from app.routers import metrics, services, oracle_admin
+
+# 🔥 Import all routers
+from app.routers import (
+    metrics,
+    services,
+    oracle_admin,
+    prometheus_targets,
+    mssql_admin,
+    logs
+)
 
 # ------------------------------------------------------------------
 # Prometheus Gauges (System Metrics)
@@ -136,8 +145,11 @@ async def login(
 
 
 # ------------------------------------------------------------------
-# Include All Routers
+# Include All Routers (Full Suite)
 # ------------------------------------------------------------------
-app.include_router(metrics.router)
-app.include_router(services.router)
-app.include_router(oracle_admin.router)
+app.include_router(metrics.router)                    # /api/v1/metrics
+app.include_router(services.router)                   # /api/v1/services
+app.include_router(oracle_admin.router)               # /api/v1/oracle
+app.include_router(prometheus_targets.router)         # /api/v1/prometheus (Dynamic Targets)
+app.include_router(mssql_admin.router)                # /api/v1/mssql
+app.include_router(logs.router)                       # /api/v1/logs (Loki Proxy)
