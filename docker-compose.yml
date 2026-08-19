@@ -8,22 +8,27 @@ services:
       dockerfile: Dockerfile
     container_name: server_manager_backend
     restart: always
-    # ✅ REMOVED network_mode: host
     ports:
-      - "8000:8000" # Exposed for local debugging, Nginx will use internal DNS
+      - "8000:8000"
     volumes:
+      # Host system mounts for Linux OS, systemd, and journal logs
       - /proc:/host/proc:ro
       - /sys:/host/sys:ro
       - /var/run/dbus/system_bus_socket:/var/run/dbus/system_bus_socket:ro
       - /var/log/journal:/var/log/journal:ro
       - /run/systemd:/run/systemd:ro
+      # SQLite database persistence
       - ./server_manager.db:/app/server_manager.db
+      # 🔥 Dynamic Prometheus targets shared volume
+      - ./prometheus_targets:/app/targets
     env_file:
-      - .env # Loads SECRET_KEY, FIRST_SUPERUSER, etc.
+      - .env
     environment:
       - ALGORITHM=HS256
       - PROCFS_PATH=/host/proc
       - DATABASE_URL=sqlite+aiosqlite:///./server_manager.db
+      # 🔥 Tell the router where to write the targets file
+      - PROMETHEUS_TARGETS_FILE=/app/targets/targets.json
     networks:
       - backend_network
 
@@ -32,7 +37,6 @@ services:
     image: nginx:alpine
     container_name: server_manager_nginx
     restart: always
-    # ✅ REMOVED network_mode: host
     ports:
       - "80:80"
       - "443:443"
@@ -54,6 +58,8 @@ services:
     volumes:
       - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - prometheus-data:/prometheus
+      # 🔥 Mount the same shared targets folder for file-based discovery
+      - ./prometheus_targets:/etc/prometheus/targets
     networks:
       - backend_network
 
@@ -112,6 +118,4 @@ volumes:
 
 networks:
   backend_network:
-    driver: bridge 
-environment:
-    - WEB_CONCURRENCY=${WEB_CONCURRENCY:-2}
+    driver: bridge
