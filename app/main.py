@@ -13,14 +13,15 @@ from app.database import engine, Base, get_async_db, User, AsyncSessionLocal
 from app.auth import SecurityUtils
 from app.schemas.auth import TokenResponse
 
-# 🔥 Import all routers
+# 🔥 Import ALL routers
 from app.routers import (
     metrics,
     services,
     oracle_admin,
     prometheus_targets,
     mssql_admin,
-    logs
+    logs,
+    linux_scripts
 )
 
 # ------------------------------------------------------------------
@@ -145,11 +146,12 @@ async def login(
 
 
 # ------------------------------------------------------------------
-# Include All Routers (Full Suite)
+# Include ALL Routers (Full Suite)
 # ------------------------------------------------------------------
 app.include_router(metrics.router)                    # /api/v1/metrics
 app.include_router(services.router)                   # /api/v1/services
-app.include_router(oracle_admin.router)               # /api/v1/oracle
+app.include_router(oracle_admin.router)               # /api/v1/oracle (Query, CDB/PDB, RMAN B/R, EXPDP, IMPDP)
+app.include_router(mssql_admin.router)                # /api/v1/mssql (Query, Backup, Restore, Create, Drop, Users)
 app.include_router(prometheus_targets.router)         # /api/v1/prometheus (Dynamic Targets)
-app.include_router(mssql_admin.router)                # /api/v1/mssql
 app.include_router(logs.router)                       # /api/v1/logs (Loki Proxy)
+app.include_router(linux_scripts.router)              # /api/v1/linux (Script Executor)
