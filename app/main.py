@@ -13,7 +13,7 @@ from app.database import engine, Base, get_async_db, User, AsyncSessionLocal
 from app.auth import SecurityUtils
 from app.schemas.auth import TokenResponse
 
-# 🔥 Import ALL routers (Complete Suite)
+# 🔥 Import ALL routers (Complete Enterprise Suite)
 from app.routers import (
     metrics,
     services,
@@ -24,6 +24,7 @@ from app.routers import (
     linux_scripts,
     terminal,
     file_browser,
+    script_manager,  # 🔥 NEW: Script Management
 )
 
 # ------------------------------------------------------------------
@@ -80,14 +81,25 @@ app = FastAPI(
     
     This API provides comprehensive management capabilities for enterprise Linux servers:
     
-    - **System Metrics**: Real-time CPU, RAM, Disk monitoring
+    ### System & Infrastructure
+    - **System Metrics**: Real-time CPU, RAM, Disk monitoring via Prometheus
     - **Systemd Services**: Start, stop, restart, and stream logs
-    - **Oracle Database**: Execute queries, start/stop, create CDB/PDB, RMAN, EXPDP, IMPDP
-    - **MS SQL Server**: Execute queries, create/drop databases, backup/restore, user management
-    - **Dynamic Prometheus Targets**: Register and manage scrape targets
-    - **Log Query (Loki)**: Query aggregated logs using LogQL
     - **Linux Shell**: Interactive terminal (WebSocket) and script execution
     - **File Browser**: List, upload, download, delete, rename, edit files
+    
+    ### Database Management
+    - **Oracle Database**: Execute queries, start/stop, create CDB/PDB, RMAN, EXPDP, IMPDP
+    - **MS SQL Server**: Execute queries, create/drop databases, backup/restore, user management
+    
+    ### Observability & Monitoring
+    - **Prometheus Targets**: Dynamic scrape target registration
+    - **Log Query (Loki)**: Query aggregated logs using LogQL
+    - **Grafana**: Pre-configured dashboards for metrics and logs
+    
+    ### Script Management
+    - **Upload Scripts**: Upload shell scripts (sh, py, pl, rb, js, php, go, rs)
+    - **Execute Scripts**: Run scripts with live output streaming (WebSocket)
+    - **Manage Scripts**: List, view, delete, toggle executable permissions
     """
 )
 
@@ -178,60 +190,74 @@ async def login(
 
 # 1. System & Infrastructure
 app.include_router(metrics.router)                    # /api/v1/metrics
+#   - GET  /snapshot          - System metrics snapshot
+#   - WS   /live              - Live metrics streaming
 
 # 2. Systemd Service Management
 app.include_router(services.router)                   # /api/v1/services
+#   - POST /control           - Start/Stop/Restart services
+#   - WS   /stream/{name}     - Live service log streaming
 
 # 3. Oracle Database Management
 app.include_router(oracle_admin.router)               # /api/v1/oracle
-#   - Execute SQL queries (Thin Mode - NO Oracle Client required)
-#   - Start/Stop database instances
-#   - Create CDB/PDB via DBCA
-#   - RMAN Full/Incremental backups & restore
-#   - EXPDP Data Pump exports
-#   - IMPDP Data Pump imports
+#   - POST /query              - Execute SQL queries (Thin Mode - NO Oracle Client required)
+#   - POST /instance-control   - Start/Stop database instances
+#   - POST /create-database    - Create CDB/PDB via DBCA
+#   - POST /rman-backup        - RMAN Full/Incremental backups
+#   - POST /rman-restore       - RMAN restore with recovery
+#   - POST /expdp-backup       - EXPDP Data Pump exports
+#   - POST /impdp-restore      - IMPDP Data Pump imports
 
 # 4. MS SQL Server Management
 app.include_router(mssql_admin.router)                # /api/v1/mssql
-#   - Execute T-SQL queries
-#   - Create/Drop databases
-#   - Full database backups & restores
-#   - Create/Drop users with role assignment
+#   - POST /query              - Execute T-SQL queries
+#   - POST /database           - Create database
+#   - POST /backup             - Full database backup
+#   - POST /restore            - Restore database from .bak
+#   - DELETE /database         - Drop database
+#   - POST /user               - Create user with role
+#   - DELETE /user             - Drop user
 
 # 5. Prometheus Dynamic Target Management
 app.include_router(prometheus_targets.router)         # /api/v1/prometheus
-#   - Register new scrape targets
-#   - Update existing targets
-#   - Delete target configurations
+#   - GET  /targets            - List all targets
+#   - POST /targets            - Register/update targets
+#   - DELETE /targets/{job}    - Delete job targets
 
 # 6. Log Aggregation (Grafana Loki)
 app.include_router(logs.router)                       # /api/v1/logs
-#   - Query Loki using LogQL
-#   - Filter and search aggregated logs
+#   - GET /query               - Query Loki using LogQL
 
 # 7. Linux OS Management
 app.include_router(linux_scripts.router)              # /api/v1/linux/execute
-#   - Execute bash scripts securely
-#   - Built-in safety blocks (prevents rm -rf /, etc.)
+#   - POST /execute            - Execute bash scripts securely (batch mode)
 
 # 8. Interactive Terminal (WebSocket)
 app.include_router(terminal.router)                   # /api/v1/linux/terminal
-#   - Full PTY (Pseudo-Terminal) support
-#   - Supports vim, top, htop, nano
-#   - Real-time bidirectional communication
-#   - Copy/Paste support via frontend
+#   - WS  /terminal            - Full PTY terminal with copy/paste support
 
 # 9. File Browser
 app.include_router(file_browser.router)               # /api/v1/files
-#   - List directory contents with metadata
-#   - Upload files (single or multiple)
-#   - Download files (streaming)
-#   - Delete files/directories
-#   - Rename/Move files/directories
-#   - Create files/directories
-#   - Read/Edit text files
-#   - Path traversal protection
-#   - Forbidden system paths blocked
+#   - GET  /list/{path}        - List directory contents
+#   - GET  /download/{path}    - Download file (streaming)
+#   - POST /upload/{path}      - Upload file(s)
+#   - DELETE /delete/{path}    - Delete file/directory
+#   - POST /rename             - Rename/move file/directory
+#   - POST /move               - Move file/directory
+#   - POST /create-file        - Create file with content
+#   - POST /create-directory   - Create directory
+#   - GET  /read/{path}        - Read file content
+#   - POST /edit               - Edit file content
+
+# 10. 🔥 Script Manager (NEW)
+app.include_router(script_manager.router)             # /api/v1/scripts
+#   - POST /upload             - Upload script file
+#   - GET  /list               - List all scripts with metadata
+#   - GET  /view/{name}        - View script content
+#   - POST /execute            - Execute script (batch mode)
+#   - WS   /stream/{name}      - Execute with live output streaming
+#   - DELETE /delete/{name}    - Delete script
+#   - POST /toggle-executable/{name} - Make script executable/non-executable
 
 
 # ------------------------------------------------------------------
@@ -250,14 +276,40 @@ async def root():
         "metrics": "/metrics",
         "api_prefix": "/api/v1",
         "modules": [
-            {"name": "auth", "path": "/api/v1/auth/login"},
-            {"name": "metrics", "path": "/api/v1/metrics"},
-            {"name": "services", "path": "/api/v1/services"},
-            {"name": "oracle", "path": "/api/v1/oracle"},
-            {"name": "mssql", "path": "/api/v1/mssql"},
-            {"name": "prometheus", "path": "/api/v1/prometheus"},
-            {"name": "logs", "path": "/api/v1/logs"},
-            {"name": "linux", "path": "/api/v1/linux"},
-            {"name": "files", "path": "/api/v1/files"},
+            {"name": "Authentication", "path": "/api/v1/auth/login"},
+            {"name": "System Metrics", "path": "/api/v1/metrics"},
+            {"name": "Systemd Services", "path": "/api/v1/services"},
+            {"name": "Oracle Database", "path": "/api/v1/oracle"},
+            {"name": "MS SQL Server", "path": "/api/v1/mssql"},
+            {"name": "Prometheus Targets", "path": "/api/v1/prometheus"},
+            {"name": "Log Query (Loki)", "path": "/api/v1/logs"},
+            {"name": "Linux Script Execution", "path": "/api/v1/linux/execute"},
+            {"name": "Interactive Terminal", "path": "/api/v1/linux/terminal"},
+            {"name": "File Browser", "path": "/api/v1/files"},
+            {"name": "Script Manager", "path": "/api/v1/scripts"},
         ]
     }
+
+
+# ------------------------------------------------------------------
+# Optional: Startup Message
+# ------------------------------------------------------------------
+print("=" * 60)
+print("🚀 Enterprise Linux Core Engine v1.0.0")
+print("=" * 60)
+print(f"📡 API Documentation:  http://localhost:8000/docs")
+print(f"📊 Prometheus Metrics: http://localhost:8000/metrics")
+print(f"🩺 Health Check:       http://localhost:8000/health")
+print(f"🔐 Authentication:     http://localhost:8000/api/v1/auth/login")
+print("=" * 60)
+print("✅ All routers loaded:")
+print("   - /api/v1/metrics      (System Metrics)")
+print("   - /api/v1/services     (Systemd Services)")
+print("   - /api/v1/oracle       (Oracle Database)")
+print("   - /api/v1/mssql        (MS SQL Server)")
+print("   - /api/v1/prometheus   (Prometheus Targets)")
+print("   - /api/v1/logs         (Loki Logs)")
+print("   - /api/v1/linux        (Linux Shell & Scripts)")
+print("   - /api/v1/files        (File Browser)")
+print("   - /api/v1/scripts      (Script Manager) 🔥 NEW")
+print("=" * 60)
