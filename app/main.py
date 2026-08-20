@@ -13,7 +13,7 @@ from app.database import engine, Base, get_async_db, User, AsyncSessionLocal
 from app.auth import SecurityUtils
 from app.schemas.auth import TokenResponse
 
-# 🔥 Import ALL routers (including the new Terminal router)
+# 🔥 Import ALL routers (Complete Suite)
 from app.routers import (
     metrics,
     services,
@@ -22,7 +22,8 @@ from app.routers import (
     mssql_admin,
     logs,
     linux_scripts,
-    terminal,  # 🔥 NEW: Interactive WebSocket Terminal
+    terminal,
+    file_browser,
 )
 
 # ------------------------------------------------------------------
@@ -73,7 +74,21 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Enterprise Linux Core Engine",
     version="1.0.0",
-    lifespan=lifespan
+    lifespan=lifespan,
+    description="""
+    ## Enterprise Linux Server Management Suite
+    
+    This API provides comprehensive management capabilities for enterprise Linux servers:
+    
+    - **System Metrics**: Real-time CPU, RAM, Disk monitoring
+    - **Systemd Services**: Start, stop, restart, and stream logs
+    - **Oracle Database**: Execute queries, start/stop, create CDB/PDB, RMAN, EXPDP, IMPDP
+    - **MS SQL Server**: Execute queries, create/drop databases, backup/restore, user management
+    - **Dynamic Prometheus Targets**: Register and manage scrape targets
+    - **Log Query (Loki)**: Query aggregated logs using LogQL
+    - **Linux Shell**: Interactive terminal (WebSocket) and script execution
+    - **File Browser**: List, upload, download, delete, rename, edit files
+    """
 )
 
 # ------------------------------------------------------------------
@@ -119,6 +134,10 @@ async def health_check():
 # ------------------------------------------------------------------
 @app.get("/metrics", response_class=PlainTextResponse, tags=["Observability"])
 async def get_prometheus_metrics():
+    """
+    Prometheus metrics endpoint.
+    Scraped by Prometheus for monitoring CPU, RAM, and Disk usage.
+    """
     CPU_USAGE.set(psutil.cpu_percent(interval=None))
     RAM_USAGE.set(psutil.virtual_memory().percent)
     DISK_USAGE.set(psutil.disk_usage("/").percent)
@@ -133,6 +152,13 @@ async def login(
     form_data: OAuth2PasswordRequestForm = Depends(),
     db: AsyncSession = Depends(get_async_db)
 ):
+    """
+    Authenticate and receive a JWT access token.
+    
+    - Use OAuth2 password flow
+    - Returns Bearer token for subsequent API calls
+    - Token expires based on ACCESS_TOKEN_EXPIRE_MINUTES setting
+    """
     result = await db.execute(select(User).filter(User.username == form_data.username))
     user = result.scalars().first()
 
@@ -147,13 +173,91 @@ async def login(
 
 
 # ------------------------------------------------------------------
-# Include ALL Routers (Full Suite)
+# Include ALL Routers (Complete Enterprise Suite)
 # ------------------------------------------------------------------
+
+# 1. System & Infrastructure
 app.include_router(metrics.router)                    # /api/v1/metrics
+
+# 2. Systemd Service Management
 app.include_router(services.router)                   # /api/v1/services
-app.include_router(oracle_admin.router)               # /api/v1/oracle (Query, CDB/PDB, RMAN B/R, EXPDP, IMPDP)
-app.include_router(mssql_admin.router)                # /api/v1/mssql (Query, Backup, Restore, Create, Drop, Users)
-app.include_router(prometheus_targets.router)         # /api/v1/prometheus (Dynamic Targets)
-app.include_router(logs.router)                       # /api/v1/logs (Loki Proxy)
-app.include_router(linux_scripts.router)              # /api/v1/linux/execute (Script Executor)
-app.include_router(terminal.router)                   # 🔥 /api/v1/linux/terminal (Interactive TTY WebSocket)
+
+# 3. Oracle Database Management
+app.include_router(oracle_admin.router)               # /api/v1/oracle
+#   - Execute SQL queries (Thin Mode - NO Oracle Client required)
+#   - Start/Stop database instances
+#   - Create CDB/PDB via DBCA
+#   - RMAN Full/Incremental backups & restore
+#   - EXPDP Data Pump exports
+#   - IMPDP Data Pump imports
+
+# 4. MS SQL Server Management
+app.include_router(mssql_admin.router)                # /api/v1/mssql
+#   - Execute T-SQL queries
+#   - Create/Drop databases
+#   - Full database backups & restores
+#   - Create/Drop users with role assignment
+
+# 5. Prometheus Dynamic Target Management
+app.include_router(prometheus_targets.router)         # /api/v1/prometheus
+#   - Register new scrape targets
+#   - Update existing targets
+#   - Delete target configurations
+
+# 6. Log Aggregation (Grafana Loki)
+app.include_router(logs.router)                       # /api/v1/logs
+#   - Query Loki using LogQL
+#   - Filter and search aggregated logs
+
+# 7. Linux OS Management
+app.include_router(linux_scripts.router)              # /api/v1/linux/execute
+#   - Execute bash scripts securely
+#   - Built-in safety blocks (prevents rm -rf /, etc.)
+
+# 8. Interactive Terminal (WebSocket)
+app.include_router(terminal.router)                   # /api/v1/linux/terminal
+#   - Full PTY (Pseudo-Terminal) support
+#   - Supports vim, top, htop, nano
+#   - Real-time bidirectional communication
+#   - Copy/Paste support via frontend
+
+# 9. File Browser
+app.include_router(file_browser.router)               # /api/v1/files
+#   - List directory contents with metadata
+#   - Upload files (single or multiple)
+#   - Download files (streaming)
+#   - Delete files/directories
+#   - Rename/Move files/directories
+#   - Create files/directories
+#   - Read/Edit text files
+#   - Path traversal protection
+#   - Forbidden system paths blocked
+
+
+# ------------------------------------------------------------------
+# Root Endpoint (API Information)
+# ------------------------------------------------------------------
+@app.get("/", tags=["System"])
+async def root():
+    """
+    Root endpoint with API information.
+    """
+    return {
+        "service": "Enterprise Linux Core Engine",
+        "version": "1.0.0",
+        "docs": "/docs",
+        "health": "/health",
+        "metrics": "/metrics",
+        "api_prefix": "/api/v1",
+        "modules": [
+            {"name": "auth", "path": "/api/v1/auth/login"},
+            {"name": "metrics", "path": "/api/v1/metrics"},
+            {"name": "services", "path": "/api/v1/services"},
+            {"name": "oracle", "path": "/api/v1/oracle"},
+            {"name": "mssql", "path": "/api/v1/mssql"},
+            {"name": "prometheus", "path": "/api/v1/prometheus"},
+            {"name": "logs", "path": "/api/v1/logs"},
+            {"name": "linux", "path": "/api/v1/linux"},
+            {"name": "files", "path": "/api/v1/files"},
+        ]
+    }
