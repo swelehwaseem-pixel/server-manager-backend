@@ -13,7 +13,7 @@ from app.database import engine, Base, get_async_db, User, AsyncSessionLocal
 from app.auth import SecurityUtils
 from app.schemas.auth import TokenResponse
 
-# 🔥 Import ALL routers
+# 🔥 Import ALL routers (including the new Terminal router)
 from app.routers import (
     metrics,
     services,
@@ -21,7 +21,8 @@ from app.routers import (
     prometheus_targets,
     mssql_admin,
     logs,
-    linux_scripts
+    linux_scripts,
+    terminal,  # 🔥 NEW: Interactive WebSocket Terminal
 )
 
 # ------------------------------------------------------------------
@@ -154,4 +155,5 @@ app.include_router(oracle_admin.router)               # /api/v1/oracle (Query, C
 app.include_router(mssql_admin.router)                # /api/v1/mssql (Query, Backup, Restore, Create, Drop, Users)
 app.include_router(prometheus_targets.router)         # /api/v1/prometheus (Dynamic Targets)
 app.include_router(logs.router)                       # /api/v1/logs (Loki Proxy)
-app.include_router(linux_scripts.router)              # /api/v1/linux (Script Executor)
+app.include_router(linux_scripts.router)              # /api/v1/linux/execute (Script Executor)
+app.include_router(terminal.router)                   # 🔥 /api/v1/linux/terminal (Interactive TTY WebSocket)
