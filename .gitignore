@@ -22,3 +22,22 @@ __pycache__/
 # Host OS System Dumps
 .DS_Store
 Thumbs.db
+
+# IDE/editor
+.vscode/
+.idea/
+*.swp
+
+# Backup/dump files
+*.dmp
+*.bak
+backup-mirror/
+
+# Certificates/keys
+*.pem
+*.key
+
+# Python build artifacts
+*.egg-info/
+build/
+dist/
